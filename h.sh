@@ -27,6 +27,12 @@ export DEBIAN_FRONTEND=noninteractive
 APT_INSTALL="apt-get install -y --no-install-recommends"
 
 ##### packages #####
+# The netinst media stays in sources.list during install and breaks apt-get update
+sed -i '/cdrom:/d' /etc/apt/sources.list 2>/dev/null || true
+sed -i '/cdrom:/d' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+[[ -f /etc/apt/sources.list.d/debian.sources ]] && \
+  sed -i '/^URIs: cdrom/,+3d' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+
 apt-get update
 $APT_INSTALL \
   openssh-server sudo curl ca-certificates \
@@ -72,18 +78,25 @@ chmod 644 /etc/ssh/sshd_config.d/99-hardening.conf
 sshd -t && echo "sshd config OK"
 
 ##### firewall (firewalld) #####
-# firewall-offline-cmd writes config without needing the daemon running,
-# so this works in the installer chroot and on a live box alike.
-FWC=firewall-offline-cmd
+# In the installer chroot the daemon isn't running, so use the offline tool.
+# On a live system use firewall-cmd --permanent and reload at the end.
+# Every call is tolerant: firewalld returns non-zero for "already set".
+if [[ $IN_CHROOT -eq 1 ]]; then
+  fw() { firewall-offline-cmd "$@" || echo "  [skip] $*"; }
+else
+  fw() { firewall-cmd --permanent "$@" || echo "  [skip] $*"; }
+fi
 
-$FWC --set-default-zone=public
+fw --set-default-zone=public
+fw --zone=public --remove-service=ssh
+fw --zone=public --remove-service=dhcpv6-client
+fw --zone=public --remove-service=cockpit
 # rate-limited ssh instead of a plain accept
-$FWC --zone=public --remove-service=ssh 2>/dev/null || true
-$FWC --zone=public --add-rich-rule="rule service name=\"ssh\" accept limit value=\"10/m\"" 2>/dev/null || true
-# cockpit stays local-only; reach it via ssh -L 9090:127.0.0.1:9090
-$FWC --zone=public --remove-service=cockpit 2>/dev/null || true
-$FWC --zone=public --remove-service=dhcpv6-client 2>/dev/null || true
-$FWC --zone=public --set-target=DROP 2>/dev/null || true
+fw --zone=public --add-rich-rule='rule service name="ssh" accept limit value="10/m"'
+
+[[ $IN_CHROOT -eq 0 ]] && { firewall-cmd --reload || true; }
+echo "--- firewall result ---"
+firewall-cmd --list-all 2>/dev/null || firewall-offline-cmd --list-all 2>/dev/null || true
 
 ##### fail2ban #####
 cat > /etc/fail2ban/jail.local <<EOF
@@ -176,6 +189,14 @@ apt-get autoremove -y
 systemctl enable ssh firewalld fail2ban chrony unattended-upgrades 2>/dev/null || true
 # cockpit is socket-activated and stays bound to localhost
 systemctl enable cockpit.socket 2>/dev/null || true
+
+# On a live box, apply now instead of waiting for a reboot
+if [[ $IN_CHROOT -eq 0 ]]; then
+  systemctl restart fail2ban || true
+  systemctl restart systemd-journald || true
+  mount -a || true
+  systemctl restart ssh || true
+fi
 
 echo "=== hardening complete $(date -Is) ==="
 echo "Reboot, then: ssh ${ADMIN_USER}@<ip>"
