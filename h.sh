@@ -179,7 +179,7 @@ EOF
 
 ##### misc #####
 timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
-sed -i 's/^UMASK.*/UMASK\t\t027/' /etc/login.defs
+grep -q '^UMASK' /etc/login.defs || printf 'UMASK\t\t027\n' >> /etc/login.defs
 
 # strip services a VPS doesn't need
 apt-get purge -y rpcbind nfs-common avahi-daemon cups 2>/dev/null || true
