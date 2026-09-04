@@ -179,7 +179,16 @@ EOF
 
 ##### misc #####
 timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+# Trixie's login.defs has no UMASK line, so append rather than substitute
 grep -q '^UMASK' /etc/login.defs || printf 'UMASK\t\t027\n' >> /etc/login.defs
+
+# Cockpit: bind to localhost only, reach it via ssh -L 9090:127.0.0.1:9090
+install -d -m 755 /etc/systemd/system/cockpit.socket.d
+cat > /etc/systemd/system/cockpit.socket.d/listen.conf <<'EOF'
+[Socket]
+ListenStream=
+ListenStream=127.0.0.1:9090
+EOF
 
 # strip services a VPS doesn't need
 apt-get purge -y rpcbind nfs-common avahi-daemon cups 2>/dev/null || true
@@ -192,9 +201,12 @@ systemctl enable cockpit.socket 2>/dev/null || true
 
 # On a live box, apply now instead of waiting for a reboot
 if [[ $IN_CHROOT -eq 0 ]]; then
+  systemctl daemon-reload || true
   systemctl restart fail2ban || true
   systemctl restart systemd-journald || true
-  mount -a || true
+  systemctl restart cockpit.socket || true
+  mount -o remount /tmp 2>/dev/null || true
+  mount -o remount /dev/shm 2>/dev/null || true
   systemctl restart ssh || true
 fi
 
